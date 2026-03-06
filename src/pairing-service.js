@@ -403,38 +403,85 @@ function buildSamplingWeights(scoredCandidates, options = PAIRING_SAMPLING_DEFAU
     ...(options || {}),
   };
 
-  const scores = scoredCandidates.map(candidate => candidate.score);
-  const maxScore = Math.max(...scores);
-  const minScore = Math.min(...scores);
+  let maxScore = -Infinity;
+  let minScore = Infinity;
+  for (const candidate of scoredCandidates) {
+    const candidateScore = Number.isFinite(candidate?.score) ? candidate.score : 0;
+    if (candidateScore > maxScore) {
+      maxScore = candidateScore;
+    }
+    if (candidateScore < minScore) {
+      minScore = candidateScore;
+    }
+  }
+  if (!Number.isFinite(maxScore)) {
+    maxScore = 0;
+  }
+  if (!Number.isFinite(minScore)) {
+    minScore = 0;
+  }
+
   const scoreSpread = maxScore - minScore;
   const safeScoreSpreadDivisor =
-    (typeof mergedOptions.scoreSpreadTemperatureDivisor === 'number' && mergedOptions.scoreSpreadTemperatureDivisor > 0)
+    (typeof mergedOptions.scoreSpreadTemperatureDivisor === 'number'
+      && Number.isFinite(mergedOptions.scoreSpreadTemperatureDivisor)
+      && mergedOptions.scoreSpreadTemperatureDivisor > 0)
       ? mergedOptions.scoreSpreadTemperatureDivisor
       : PAIRING_SAMPLING_DEFAULTS.scoreSpreadTemperatureDivisor;
+  const safeScoreTemperatureFloor =
+    (typeof mergedOptions.scoreTemperatureFloor === 'number'
+      && Number.isFinite(mergedOptions.scoreTemperatureFloor)
+      && mergedOptions.scoreTemperatureFloor > 0)
+      ? mergedOptions.scoreTemperatureFloor
+      : PAIRING_SAMPLING_DEFAULTS.scoreTemperatureFloor;
   const safeInterTeamEloScale =
-    (typeof mergedOptions.interTeamEloScale === 'number' && mergedOptions.interTeamEloScale > 0)
+    (typeof mergedOptions.interTeamEloScale === 'number'
+      && Number.isFinite(mergedOptions.interTeamEloScale)
+      && mergedOptions.interTeamEloScale > 0)
       ? mergedOptions.interTeamEloScale
       : PAIRING_SAMPLING_DEFAULTS.interTeamEloScale;
   const safeInterTeamEloStrength =
-    (typeof mergedOptions.interTeamEloStrength === 'number' && mergedOptions.interTeamEloStrength >= 0)
+    (typeof mergedOptions.interTeamEloStrength === 'number'
+      && Number.isFinite(mergedOptions.interTeamEloStrength)
+      && mergedOptions.interTeamEloStrength >= 0)
       ? mergedOptions.interTeamEloStrength
       : PAIRING_SAMPLING_DEFAULTS.interTeamEloStrength;
+  const safeMinCandidateWeight =
+    (typeof mergedOptions.minCandidateWeight === 'number'
+      && Number.isFinite(mergedOptions.minCandidateWeight)
+      && mergedOptions.minCandidateWeight > 0)
+      ? mergedOptions.minCandidateWeight
+      : PAIRING_SAMPLING_DEFAULTS.minCandidateWeight;
   const scoreTemperature = Math.max(
-    mergedOptions.scoreTemperatureFloor,
+    safeScoreTemperatureFloor,
     scoreSpread / safeScoreSpreadDivisor
   );
+  const safeScoreTemperature = Number.isFinite(scoreTemperature) && scoreTemperature > 0
+    ? scoreTemperature
+    : safeScoreTemperatureFloor;
 
   return scoredCandidates.map(candidate => {
+    const candidateScore = Number.isFinite(candidate?.score) ? candidate.score : minScore;
+    const interTeamEloDiff = Number.isFinite(candidate?.interTeamEloDiff) && candidate.interTeamEloDiff >= 0
+      ? candidate.interTeamEloDiff
+      : 0;
+
     // Preserve repeat/waiting-karma priorities via softmax on the base score.
-    const scoreFactor = Math.exp((candidate.score - maxScore) / scoreTemperature);
+    const scoreFactor = Math.exp((candidateScore - maxScore) / safeScoreTemperature);
     // Bias towards lower Elo gap without turning it into a hard deterministic cut.
     const eloFactor = Math.exp(
-      -(candidate.interTeamEloDiff / safeInterTeamEloScale) * safeInterTeamEloStrength
+      -(interTeamEloDiff / safeInterTeamEloScale) * safeInterTeamEloStrength
     );
-    const weight = Math.max(mergedOptions.minCandidateWeight, scoreFactor * eloFactor);
+    const rawWeight = scoreFactor * eloFactor;
+    const normalizedWeight = Number.isFinite(rawWeight) && rawWeight >= 0
+      ? rawWeight
+      : safeMinCandidateWeight;
+    const weight = Math.max(safeMinCandidateWeight, normalizedWeight);
 
     return {
       ...candidate,
+      score: candidateScore,
+      interTeamEloDiff,
       sampleWeight: weight,
     };
   });
@@ -445,21 +492,33 @@ function pickWeightedCandidate(weightedCandidates, randomValue) {
     return null;
   }
 
-  const totalWeight = weightedCandidates.reduce((sum, candidate) => sum + candidate.sampleWeight, 0);
-  if (totalWeight <= 0) {
+  const normalizedWeights = weightedCandidates.map(candidate => ({
+    candidate,
+    weight: (Number.isFinite(candidate?.sampleWeight) && candidate.sampleWeight > 0) ? candidate.sampleWeight : 0
+  }));
+
+  const totalWeight = normalizedWeights.reduce((sum, entry) => sum + entry.weight, 0);
+  if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
     return weightedCandidates[0];
   }
 
-  const target = randomValue * totalWeight;
+  const safeRandomValue = Number.isFinite(randomValue)
+    ? Math.min(Math.max(randomValue, 0), 1 - Number.EPSILON)
+    : 0;
+  const target = safeRandomValue * totalWeight;
   let cumulative = 0;
-  for (const candidate of weightedCandidates) {
-    cumulative += candidate.sampleWeight;
+  let lastPositiveCandidate = null;
+  for (const entry of normalizedWeights) {
+    cumulative += entry.weight;
+    if (entry.weight > 0) {
+      lastPositiveCandidate = entry.candidate;
+    }
     if (target <= cumulative) {
-      return candidate;
+      return entry.candidate;
     }
   }
 
-  return weightedCandidates[weightedCandidates.length - 1];
+  return lastPositiveCandidate || weightedCandidates[weightedCandidates.length - 1];
 }
 
 function buildSideCounts(matches) {
