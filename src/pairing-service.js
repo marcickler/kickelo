@@ -21,6 +21,87 @@ const PAIRING_SAMPLING_DEFAULTS = {
 
 let lastSuggestion = null;
 
+function isPairingDebugEnabled() {
+  if (typeof window === 'undefined') {
+    return false;
+  }
+
+  try {
+    const storageFlag = window.localStorage?.getItem('kickeloPairingDebug');
+    if (storageFlag === '1') {
+      return true;
+    }
+
+    const queryFlag = new URLSearchParams(window.location.search).get('pairingDebug');
+    return queryFlag === '1';
+  } catch {
+    return false;
+  }
+}
+
+function logPairingDebug({
+  activePlayers,
+  playsCount,
+  waitingKarmaMap,
+  uniformPlayCounts,
+  topScoredCandidates,
+  weightedCandidates,
+  chosen,
+  randomValue,
+}) {
+  if (!isPairingDebugEnabled()) {
+    return;
+  }
+
+  const totalWeight = weightedCandidates.reduce((sum, candidate) => {
+    const weight = Number.isFinite(candidate?.sampleWeight) ? candidate.sampleWeight : 0;
+    return sum + Math.max(0, weight);
+  }, 0);
+
+  const chosenWeight = Number.isFinite(chosen?.sampleWeight) ? chosen.sampleWeight : 0;
+  const chosenProbabilityPct = totalWeight > 0
+    ? (chosenWeight / totalWeight) * 100
+    : 0;
+
+  const topCandidatesTable = weightedCandidates
+    .slice()
+    .sort((a, b) => {
+      const weightDiff = (b.sampleWeight || 0) - (a.sampleWeight || 0);
+      if (weightDiff !== 0) return weightDiff;
+      const eloDiffGap = (a.interTeamEloDiff || 0) - (b.interTeamEloDiff || 0);
+      if (eloDiffGap !== 0) return eloDiffGap;
+      return (b.score || 0) - (a.score || 0);
+    })
+    .slice(0, 10)
+    .map((candidate, index) => ({
+      rank: index + 1,
+      pairing: `[${candidate.pairing.teamA.join(', ')}] vs [${candidate.pairing.teamB.join(', ')}]`,
+      score: candidate.score,
+      interTeamEloDiff: candidate.interTeamEloDiff,
+      sampleWeight: Number(candidate.sampleWeight?.toFixed(4) || 0),
+      probabilityPct: Number((totalWeight > 0 ? (candidate.sampleWeight / totalWeight) * 100 : 0).toFixed(2)),
+    }));
+
+  console.groupCollapsed('[Pairing Debug] Suggestion');
+  console.log('Summary', {
+    activePlayers,
+    uniformPlayCounts,
+    playsCount,
+    waitingKarmaMap,
+    topScore: topScoredCandidates[0]?.score ?? null,
+    topScoreBandSize: topScoredCandidates.length,
+    weightedCandidateCount: weightedCandidates.length,
+    randomValue: Number(randomValue.toFixed(6)),
+    chosenPairing: chosen
+      ? `[${chosen.pairing.teamA.join(', ')}] vs [${chosen.pairing.teamB.join(', ')}]`
+      : null,
+    chosenInterTeamEloDiff: chosen?.interTeamEloDiff ?? null,
+    chosenProbabilityPct: Number(chosenProbabilityPct.toFixed(2)),
+  });
+  console.table(topCandidatesTable);
+  console.groupEnd();
+}
+
 function getSeasonElo(playerName) {
   if (!isCacheReady()) {
     return STARTING_ELO;
@@ -579,11 +660,10 @@ export async function suggestPairing() {
   const countsSession = buildCoAndOppCounts(sessionMatches, activePlayers);
   const countsHistoric = buildCoAndOppCounts(historicMatches, activePlayers);
   const waitingKarmaMap = computeWaitingKarma(sessionMatches, activePlayers, WAITING_KARMA_DEFAULTS);
-  const effectiveWaitingKarmaMap = hasUniformPlayCounts(playsCount, activePlayers)
+  const uniformPlayCounts = hasUniformPlayCounts(playsCount, activePlayers);
+  const effectiveWaitingKarmaMap = uniformPlayCounts
     ? {}
     : waitingKarmaMap;
-
-  console.log("Waiting Karma Map:", effectiveWaitingKarmaMap);
 
   const eloMap = {};
   activePlayers.forEach(playerId => {
@@ -649,6 +729,16 @@ export async function suggestPairing() {
   const chosen = pickWeightedCandidate(weightedCandidates, randomValue)
     || weightedCandidates[0]
     || scored[0];
+  logPairingDebug({
+    activePlayers,
+    playsCount,
+    waitingKarmaMap: effectiveWaitingKarmaMap,
+    uniformPlayCounts,
+    topScoredCandidates,
+    weightedCandidates,
+    chosen,
+    randomValue,
+  });
   const best = chosen.pairing;
   const { countA, countB } = buildSideCounts(chronologicalMatches);
   const { teamA, teamB } = best;
