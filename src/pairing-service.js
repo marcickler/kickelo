@@ -14,7 +14,7 @@ const WAITING_KARMA_DEFAULTS = {
 
 const PAIRING_SAMPLING_DEFAULTS = {
   maxScoreGapForSampling: 1e-6,
-  interTeamEloScale: 140,
+  interTeamEloScale: 80,
   interTeamEloStrength: 1,
   minCandidateWeight: 1e-12,
 };
