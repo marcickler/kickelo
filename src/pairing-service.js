@@ -69,7 +69,6 @@ function logPairingDebug({
       if (eloDiffGap !== 0) return eloDiffGap;
       return (b.score || 0) - (a.score || 0);
     })
-    .slice(0, 10)
     .map((candidate, index) => ({
       rank: index + 1,
       pairing: `[${candidate.pairing.teamA.join(', ')}] vs [${candidate.pairing.teamB.join(', ')}]`,
